@@ -49,6 +49,38 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
   const [messages, setMessages] = useState<any[]>([]);
   const [chats, setChats] = useState<any[]>([]);
   const [inputText, setInputText] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Typing state sync
+  useEffect(() => {
+    if (!activeChatId || !currentUser) return;
+
+    const chatRef = doc(db, "chats", activeChatId);
+    
+    if (inputText.length > 0 && !isTyping) {
+      setIsTyping(true);
+      updateDoc(chatRef, {
+        [`typing.${currentUser.uid}`]: true
+      }).catch(console.error);
+    }
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+    typingTimeoutRef.current = setTimeout(() => {
+      if (isTyping) {
+        setIsTyping(false);
+        updateDoc(chatRef, {
+          [`typing.${currentUser.uid}`]: false
+        }).catch(console.error);
+      }
+    }, 2000);
+
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    };
+  }, [inputText, activeChatId, currentUser]);
+
   const [isUploading, setIsUploading] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
@@ -282,10 +314,14 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                 <div className="flex flex-col">
                   <h2 className="text-[16px] font-semibold m-0 leading-tight">{selectedChat?.name}</h2>
                   <span className="text-[11.5px] text-[#667781] leading-tight" dir="rtl">
-                    {otherUserStatus ? (
-                      otherUserStatus.isOnline ? "מחובר/ת" : `מחובר/ת לאחרונה ב-${formatDate(otherUserStatus.lastSeen)}`
+                    {Object.entries(selectedChat?.typing || {}).some(([uid, typing]) => typing && uid !== currentUser.uid) ? (
+                      <span className="text-[#25d366] font-medium animate-pulse">מקליד/ה...</span>
                     ) : (
-                      selectedChat?.id === 'main-group' ? "קבוצה פעילה | סידור עבודה" : "מחובר/ת"
+                      otherUserStatus ? (
+                        otherUserStatus.isOnline ? "מחובר/ת" : `מחובר/ת לאחרונה ב-${formatDate(otherUserStatus.lastSeen)}`
+                      ) : (
+                        selectedChat?.id === 'main-group' ? "קבוצה פעילה | סידור עבודה" : "מחובר/ת"
+                      )
                     )}
                   </span>
                 </div>

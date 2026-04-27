@@ -78,9 +78,9 @@ export default function ChatSidebar({ chats, activeChatId, onSelectChat, current
               <div className="flex justify-between items-center mt-0.5">
                 <p className={cn(
                   "text-[14px] truncate max-w-[90%] text-[#667781]",
-                  chat.isTyping && "text-[#25d366]"
+                  Object.values(chat.typing || {}).some(t => t) && "text-[#25d366]"
                 )}>
-                  {chat.isTyping ? 'מקליד/ה...' : chat.lastMessage}
+                  {Object.values(chat.typing || {}).some(t => t) ? 'מקליד/ה...' : chat.lastMessage}
                 </p>
                 {chat.unreadCount ? (
                   <span className="bg-[#25d366] text-white text-[12px] font-bold px-1.5 rounded-full min-w-[20px] text-center">
