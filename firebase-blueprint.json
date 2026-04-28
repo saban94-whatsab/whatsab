@@ -11,7 +11,9 @@
         "lastSeen": { "type": "string", "format": "date-time" },
         "isTyping": { "type": "boolean" },
         "isAdmin": { "type": "boolean" },
-        "userCode": { "type": "string" }
+        "userCode": { "type": "string" },
+        "email": { "type": "string" },
+        "method": { "type": "string" }
       },
       "required": ["uid", "displayName"]
     },

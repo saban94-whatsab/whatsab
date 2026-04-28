@@ -55,6 +55,7 @@ export async function processNoaaMessage(chatId: string, messageText: string) {
         senderName: "נועה AI",
         text: aiResponseText,
         type: "text",
+        status: "sent",
         createdAt: serverTimestamp()
       });
       

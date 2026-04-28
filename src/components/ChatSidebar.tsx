@@ -10,6 +10,7 @@ interface Chat {
   unreadCount?: number;
   isOnline?: boolean;
   isTyping?: boolean;
+  typing?: {[uid: string]: boolean};
 }
 
 interface ChatSidebarProps {

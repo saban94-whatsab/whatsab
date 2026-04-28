@@ -21,17 +21,19 @@ service cloud.firestore {
         && (data.lastSeen == null || data.lastSeen is timestamp)
         && (data.isTyping == null || data.isTyping is bool)
         && (data.isAdmin == null || data.isAdmin is bool)
-        && (data.userCode == null || (data.userCode is string && data.userCode.size() <= 10));
+        && (data.userCode == null || (data.userCode is string && data.userCode.size() <= 10))
+        && (data.email == null || (data.email is string && data.email.size() <= 100))
+        && (data.method == null || (data.method is string && data.method.size() <= 20));
     }
 
     match /users/{userId} {
       allow get: if isSignedIn();
-      allow list: if isSignedIn(); // Restricted by filters usually, but for internal team it's fine to see colleagues
+      allow list: if isSignedIn(); 
       allow create: if isSignedIn() && isOwner(userId) && isValidUser(incoming())
         && incoming().keys().hasAll(['uid', 'displayName']) && incoming().keys().size() >= 2;
       allow update: if isSignedIn() && isOwner(userId) && isValidUser(incoming())
         && (
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastSeen', 'isTyping', 'userCode'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastSeen', 'isTyping', 'userCode', 'email', 'method'])
           || (existing().isAdmin == true && incoming().diff(existing()).affectedKeys().hasOnly(['isAdmin']))
         );
     }
@@ -46,10 +48,16 @@ service cloud.firestore {
     }
 
     match /chats/{chatId} {
-      allow read: if isSignedIn() && (request.auth.uid in existing().participants);
+      allow read: if isSignedIn() && (chatId == "main-group" || (request.auth.uid in existing().participants));
       allow create: if isSignedIn() && (request.auth.uid in incoming().participants) && isValidChat(incoming());
-      allow update: if isSignedIn() && (request.auth.uid in existing().participants) && isValidChat(incoming())
-        && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'participants', 'name', 'isTyping']);
+      allow update: if isSignedIn() && isValidChat(incoming())
+        && (
+          (request.auth.uid in existing().participants) // Already a member
+          || (chatId == "main-group" && incoming().diff(existing()).affectedKeys().hasOnly(['participants']) && (request.auth.uid in incoming().participants)) // Joining main group
+        )
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'participants', 'name', 'isTyping'])
+        );
     }
 
     // Message Validation

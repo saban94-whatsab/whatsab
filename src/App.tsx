@@ -4,9 +4,9 @@
  */
 
 import { useState, useEffect } from 'react';
-import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { collection, getDocs, doc, setDoc, serverTimestamp, updateDoc, arrayUnion, addDoc } from 'firebase/firestore';
-import { auth, db } from './lib/firebase';
+import { onAuthStateChanged, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { collection, getDocs, doc, setDoc, serverTimestamp, updateDoc, arrayUnion, addDoc, getDoc } from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import WhatsAppClone from './components/WhatsAppClone';
 import Login from './components/Login';
 
@@ -14,14 +14,75 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Check for stored session
+  // Check for stored session and auth state
   useEffect(() => {
-    const savedUser = localStorage.getItem('saban_user');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
-    setLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        // If logged in via Firebase, fetch/sync user data
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) {
+          setCurrentUser(userDoc.data());
+        } else {
+          // If anonymous but session exists in localstorage (legacy)
+          const savedUser = localStorage.getItem('saban_user');
+          if (savedUser) {
+            const parsed = JSON.parse(savedUser);
+            if (parsed.uid === user.uid) {
+              setCurrentUser(parsed);
+            }
+          }
+        }
+      } else {
+        setCurrentUser(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  const syncUserToFirestore = async (user: any) => {
+    try {
+      await setDoc(doc(db, "users", user.uid), {
+        ...user,
+        lastSeen: serverTimestamp()
+      }, { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const user = {
+        uid: result.user.uid,
+        displayName: result.user.displayName || "משתמש גוגל",
+        photoURL: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${result.user.uid}`,
+        email: result.user.email,
+        method: 'google'
+      };
+
+      await seedInitialData();
+      await syncUserToFirestore(user);
+      
+      // Auto-join main group
+      try {
+        await updateDoc(doc(db, "chats", "main-group"), {
+          participants: arrayUnion(user.uid)
+        });
+      } catch (error) {
+        // If already participant or other error
+        console.warn("Auto-join participation update skipped or failed:", error);
+      }
+
+      setCurrentUser(user);
+    } catch (error: any) {
+      console.error("Google Login Error:", error);
+      alert("שגיאה בהתחברות עם גוגל: " + (error.message || "נסה שוב."));
+    }
+  };
 
   const handleLogin = async (userId: string, name: string) => {
     try {
@@ -34,23 +95,31 @@ export default function App() {
         photoURL: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`
       };
 
-      // Seed main group if needed
       await seedInitialData();
-
+      await syncUserToFirestore(user);
+      
       // Auto-join main group
-      await updateDoc(doc(db, "chats", "main-group"), {
-        participants: arrayUnion(authResult.user.uid)
-      });
+      try {
+        await updateDoc(doc(db, "chats", "main-group"), {
+          participants: arrayUnion(authResult.user.uid)
+        });
+      } catch (error) {
+        console.warn("Auto-join participation update failed:", error);
+      }
 
       // System notification
-      await addDoc(collection(db, "chats/main-group/messages"), {
-        chatId: "main-group",
-        senderId: "system",
-        senderName: "מערכת",
-        text: `${name} הצטרף/ה לצוות. ברוכים הבאים! 👋`,
-        type: "system",
-        createdAt: serverTimestamp()
-      });
+      try {
+        await addDoc(collection(db, "chats/main-group/messages"), {
+          chatId: "main-group",
+          senderId: "system",
+          senderName: "מערכת",
+          text: `${name} הצטרף/ה לצוות. ברוכים הבאים! 👋`,
+          type: "system",
+          createdAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.warn("Welcome message failed:", error);
+      }
 
       localStorage.setItem('saban_user', JSON.stringify(user));
       setCurrentUser(user);
@@ -66,29 +135,34 @@ export default function App() {
   };
 
   const seedInitialData = async () => {
-    const chatsRef = collection(db, "chats");
-    const snapshot = await getDocs(chatsRef);
-    if (snapshot.empty) {
-      // Create a main group chat
+    try {
       const mainChatId = "main-group";
-      await setDoc(doc(db, "chats", mainChatId), {
-        name: "קבוצת סידור עבודה",
-        participants: [], // In rules we check if user is participant, but for internal app we can auto-join
-        lastMessage: "ברוכים הבאים לקבוצת הסידור!",
-        lastMessageTime: serverTimestamp(),
-        type: "group",
-        photoURL: "https://cdn-icons-png.flaticon.com/512/3121/3121061.png"
-      });
-
-      // Special handling: every user who joins is added to participants via a Cloud Function or client-side logic
-      // For this demo, we'll relax the rule or add the user upon login if possible.
-      // Actually, let's make sure the participants list includes a wildcard or we update it.
+      const groupDoc = await getDoc(doc(db, "chats", mainChatId));
+      
+      if (!groupDoc.exists()) {
+        await setDoc(doc(db, "chats", mainChatId), {
+          name: "קבוצת סידור עבודה",
+          participants: [], 
+          lastMessage: "ברוכים הבאים לקבוצת הסידור!",
+          lastMessageTime: serverTimestamp(),
+          type: "group",
+          photoURL: "https://cdn-icons-png.flaticon.com/512/3121/3121061.png"
+        });
+      }
+    } catch (error) {
+      // Just log, don't crash login
+      console.error("Seed error:", error);
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('saban_user');
-    setCurrentUser(null);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      localStorage.removeItem('saban_user');
+      setCurrentUser(null);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
   };
 
   if (loading) return (
@@ -102,7 +176,7 @@ export default function App() {
       {currentUser ? (
         <WhatsAppClone currentUser={currentUser} onLogout={handleLogout} />
       ) : (
-        <Login onLogin={handleLogin} />
+        <Login onLogin={handleLogin} onGoogleLogin={handleGoogleLogin} />
       )}
     </div>
   );

@@ -12,7 +12,9 @@ import {
   Video,
   ArrowRight,
   LayoutDashboard,
-  Search
+  Search,
+  Forward,
+  Check
 } from 'lucide-react';
 import { 
   collection, 
@@ -24,12 +26,14 @@ import {
   updateDoc, 
   doc,
   setDoc,
-  getDoc
+  getDoc,
+  limit,
+  getDocs
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/src/lib/firebase';
 import { processNoaaMessage } from '@/src/services/noaaService';
-import { cn } from '@/src/lib/utils';
+import { cn, formatDate } from '@/src/lib/utils';
 import MessageBubble from './MessageBubble';
 import ChatSidebar from './ChatSidebar';
 
@@ -37,6 +41,7 @@ interface User {
   uid: string;
   displayName: string;
   photoURL?: string;
+  userCode?: string;
 }
 
 interface WhatsAppCloneProps {
@@ -49,6 +54,21 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
   const [messages, setMessages] = useState<any[]>([]);
   const [chats, setChats] = useState<any[]>([]);
   const [inputText, setInputText] = useState('');
+  const [users, setUsers] = useState<any[]>([]);
+
+  useEffect(() => {
+    const q = query(collection(db, "users"), limit(20));
+    getDocs(q).then(snap => {
+      setUsers(snap.docs.map(d => d.data()));
+    });
+  }, []);
+
+  const filteredUsers = users.filter(u => 
+    u.displayName?.toLowerCase().includes(mentionQuery?.toLowerCase() || '') &&
+    u.uid !== currentUser.uid
+  );
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [showMentions, setShowMentions] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -84,6 +104,10 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
   const [isUploading, setIsUploading] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [forwardMessage, setForwardMessage] = useState<any | null>(null);
+  const [replyingTo, setReplyingTo] = useState<any | null>(null);
+  const [forwardChats, setForwardChats] = useState<string[]>([]);
+  const [showForwardModal, setShowForwardModal] = useState(false);
   const [editName, setEditName] = useState(currentUser.displayName);
   const [editPhoto, setEditPhoto] = useState(currentUser.photoURL || '');
   const [otherUserStatus, setOtherUserStatus] = useState<{isOnline: boolean, lastSeen: any} | null>(null);
@@ -181,6 +205,19 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
       
       setMessages(msgs);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      
+      // Mark messages as read if they are not from me
+      msgs.forEach(async (msg) => {
+        if (msg.senderId !== currentUser.uid && msg.status !== 'read') {
+          try {
+            await updateDoc(doc(db, `chats/${activeChatId}/messages`, msg.id), {
+              status: 'read'
+            });
+          } catch (e) {
+            console.error("Error marking message as read:", e);
+          }
+        }
+      });
     });
 
     return () => unsubscribe();
@@ -197,16 +234,26 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
     await setDoc(doc(db, "users", currentUser.uid), { lastSeen: serverTimestamp() }, { merge: true });
 
     try {
-      const messageData = {
+      const messageData: any = {
         chatId: activeChatId,
         senderId: currentUser.uid,
         senderName: currentUser.displayName,
         text: text,
         type: 'text',
+        status: 'sent',
         createdAt: serverTimestamp()
       };
 
+      if (replyingTo) {
+        messageData.replyTo = {
+          id: replyingTo.id,
+          text: replyingTo.text || (replyingTo.type === 'image' ? '📷 תמונה' : replyingTo.fileName),
+          senderName: replyingTo.senderName
+        };
+      }
+
       await addDoc(collection(db, `chats/${activeChatId}/messages`), messageData);
+      setReplyingTo(null);
       
       // Update chat last message
       await updateDoc(doc(db, "chats", activeChatId), {
@@ -240,6 +287,7 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
         senderName: currentUser.displayName,
         text: '',
         type: type,
+        status: 'sent',
         fileUrl: url,
         fileName: file.name,
         createdAt: serverTimestamp()
@@ -259,6 +307,34 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
     }
   };
 
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setInputText(value);
+
+    // Detect @ for mentions
+    const cursorPosition = e.target.selectionStart || 0;
+    const textBeforeCursor = value.substring(0, cursorPosition);
+    const lastAtSymbol = textBeforeCursor.lastIndexOf('@');
+
+    if (lastAtSymbol !== -1 && (lastAtSymbol === 0 || textBeforeCursor[lastAtSymbol - 1] === ' ')) {
+      const query = textBeforeCursor.substring(lastAtSymbol + 1);
+      setMentionQuery(query);
+      setShowMentions(true);
+    } else {
+      setShowMentions(false);
+      setMentionQuery(null);
+    }
+  };
+
+  const handleSelectMention = (name: string) => {
+    if (mentionQuery === null) return;
+    const lastAtSymbol = inputText.lastIndexOf('@', inputText.length - 1);
+    const textBefore = inputText.substring(0, lastAtSymbol);
+    const textAfter = inputText.substring(lastAtSymbol + mentionQuery.length + 1);
+    setInputText(`${textBefore}@${name} ${textAfter}`);
+    setShowMentions(false);
+    setMentionQuery(null);
+  };
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -271,6 +347,39 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
       window.location.reload(); // Quick way to sync global states
     } catch (error) {
       console.error("Profile update error:", error);
+    }
+  };
+
+  const handleForwardMessages = async () => {
+    if (!forwardMessage || forwardChats.length === 0) return;
+
+    try {
+      for (const chatId of forwardChats) {
+        const messageData = {
+          chatId: chatId,
+          senderId: currentUser.uid,
+          senderName: currentUser.displayName,
+          text: forwardMessage.text || '',
+          type: forwardMessage.type,
+          status: 'sent',
+          fileUrl: forwardMessage.fileUrl || null,
+          fileName: forwardMessage.fileName || null,
+          createdAt: serverTimestamp(),
+          isForwarded: true
+        };
+
+        await addDoc(collection(db, `chats/${chatId}/messages`), messageData);
+        
+        await updateDoc(doc(db, "chats", chatId), {
+          lastMessage: forwardMessage.type === 'text' ? forwardMessage.text : (forwardMessage.type === 'image' ? '📷 תמונה' : `📄 ${forwardMessage.fileName}`),
+          lastMessageTime: serverTimestamp()
+        });
+      }
+      setShowForwardModal(false);
+      setForwardMessage(null);
+      setForwardChats([]);
+    } catch (error) {
+      console.error("Forwarding error:", error);
     }
   };
 
@@ -308,21 +417,43 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                 >
                   <ArrowRight size={20} />
                 </button>
-                <div className="w-10 h-10 rounded-full overflow-hidden bg-gray-300">
-                  <img src={selectedChat?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${selectedChat?.id}`} alt="" className="w-full h-full object-cover" />
+                <div className="relative">
+                  <div className="w-10 h-10 rounded-full overflow-hidden bg-gray-300">
+                    <img src={selectedChat?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${selectedChat?.id}`} alt="" className="w-full h-full object-cover" />
+                  </div>
+                  {otherUserStatus?.isOnline && (
+                    <div className="absolute bottom-0 left-0 w-3 h-3 bg-[#25d366] border-2 border-[#f0f2f5] rounded-full" />
+                  )}
                 </div>
                 <div className="flex flex-col">
                   <h2 className="text-[16px] font-semibold m-0 leading-tight">{selectedChat?.name}</h2>
                   <span className="text-[11.5px] text-[#667781] leading-tight" dir="rtl">
-                    {Object.entries(selectedChat?.typing || {}).some(([uid, typing]) => typing && uid !== currentUser.uid) ? (
-                      <span className="text-[#25d366] font-medium animate-pulse">מקליד/ה...</span>
-                    ) : (
-                      otherUserStatus ? (
-                        otherUserStatus.isOnline ? "מחובר/ת" : `מחובר/ת לאחרונה ב-${formatDate(otherUserStatus.lastSeen)}`
-                      ) : (
-                        selectedChat?.id === 'main-group' ? "קבוצה פעילה | סידור עבודה" : "מחובר/ת"
-                      )
-                    )}
+                    {(() => {
+                      const typingEntries = Object.entries(selectedChat?.typing || {})
+                        .filter(([uid, isTyping]) => isTyping && uid !== currentUser.uid);
+                      
+                      if (typingEntries.length > 0) {
+                        if (selectedChat?.type === 'direct') {
+                          return <span className="text-[#00a884] font-medium animate-pulse">{selectedChat.name} מקליד/ה...</span>;
+                        }
+                        
+                        // For group chats, try to find the user's name
+                        const typingUid = typingEntries[0][0];
+                        const typingUser = users.find(u => u.uid === typingUid);
+                        const name = typingUser?.displayName || "מישהו";
+                        
+                        if (typingEntries.length > 1) {
+                          return <span className="text-[#00a884] font-medium animate-pulse">{typingEntries.length} משתתפים מקלידים...</span>;
+                        }
+                        return <span className="text-[#00a884] font-medium animate-pulse">{name} מקליד/ה...</span>;
+                      }
+
+                      if (otherUserStatus) {
+                        return otherUserStatus.isOnline ? "מחובר/ת" : `מחובר/ת לאחרונה ב-${formatDate(otherUserStatus.lastSeen)}`;
+                      }
+                      
+                      return selectedChat?.id === 'main-group' ? "קבוצה פעילה | סידור עבודה" : "מחובר/ת";
+                    })()}
                   </span>
                 </div>
               </div>
@@ -345,14 +476,36 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                   key={msg.id} 
                   message={msg} 
                   isMe={msg.senderId === currentUser.uid} 
+                  onForward={() => {
+                    setForwardMessage(msg);
+                    setShowForwardModal(true);
+                  }}
+                  onReply={() => setReplyingTo(msg)}
                 />
               ))}
               <div ref={messagesEndRef} />
             </div>
 
             {/* Input Area */}
-            <footer className="h-[62px] bg-[#f0f2f5] px-4 flex items-center gap-4 shrink-0" dir="rtl">
-              <div className="flex items-center gap-4">
+            <footer className={cn(
+              "bg-[#f0f2f5] px-4 flex flex-col shrink-0 transition-all",
+              replyingTo ? "h-[110px]" : "h-[62px]"
+            )} dir="rtl">
+              {replyingTo && (
+                <div className="flex items-center gap-3 p-2 bg-[#e9edef] rounded-t-lg border-r-4 border-r-[#00a884] mx-4 mt-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] font-bold text-[#00a884] truncate">{replyingTo.senderName}</p>
+                    <p className="text-xs text-[#667781] truncate">
+                      {replyingTo.text || (replyingTo.type === 'image' ? '📷 תמונה' : replyingTo.fileName)}
+                    </p>
+                  </div>
+                  <button onClick={() => setReplyingTo(null)} className="p-1 hover:bg-black/5 rounded-full">
+                    <X size={16} className="text-[#667781]" />
+                  </button>
+                </div>
+              )}
+              <div className="flex-1 flex items-center gap-4">
+                <div className="flex items-center gap-4">
                 <Smile size={24} className="text-[#54656f] cursor-pointer opacity-60 hover:opacity-100" />
                 <div className="relative">
                   <Paperclip 
@@ -380,11 +533,25 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                 </div>
               </div>
 
-              <form onSubmit={handleSendMessage} className="flex-1">
+              <form onSubmit={handleSendMessage} className="flex-1 relative">
+                {showMentions && filteredUsers.length > 0 && (
+                  <div className="absolute bottom-full mb-2 left-0 right-0 bg-white shadow-lg rounded-lg overflow-hidden z-50 border border-gray-100 max-h-40 overflow-y-auto">
+                    {filteredUsers.map(user => (
+                      <div 
+                        key={user.uid}
+                        className="flex items-center gap-3 p-3 hover:bg-[#f5f6f6] cursor-pointer border-b border-gray-50 last:border-0"
+                        onClick={() => handleSelectMention(user.displayName)}
+                      >
+                        <img src={user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`} alt="" className="w-8 h-8 rounded-full" />
+                        <span className="text-sm font-medium">{user.displayName}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <input
                   type="text"
                   value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
+                  onChange={handleInputChange}
                   placeholder="הקלד הודעה"
                   className="w-full bg-white rounded-lg py-2.5 px-4 text-[15px] outline-none shadow-sm border-none"
                 />
@@ -402,7 +569,8 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                   <Mic size={24} />
                 </button>
               )}
-            </footer>
+            </div>
+          </footer>
 
             {isUploading && (
               <div className="absolute inset-0 bg-black/20 flex items-center justify-center z-50">
@@ -450,6 +618,64 @@ export default function WhatsAppClone({ currentUser, onLogout }: WhatsAppClonePr
                        התנתק מהמערכת
                     </button>
                   </form>
+                </div>
+              </div>
+            )}
+
+            {showForwardModal && (
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-[110] animate-in fade-in">
+                <div className="bg-white w-[400px] h-[500px] rounded-xl shadow-2xl flex flex-col overflow-hidden" dir="rtl">
+                  <header className="p-4 border-b border-gray-100 flex items-center justify-between bg-[#00a884] text-white">
+                    <h3 className="text-lg font-bold">העבר הודעה ל...</h3>
+                    <button onClick={() => { setShowForwardModal(false); setForwardChats([]); }} className="p-1 hover:bg-black/10 rounded-full">
+                      <X size={20} />
+                    </button>
+                  </header>
+                  
+                  <div className="flex-1 overflow-y-auto p-2">
+                    {chats.map(chat => (
+                      <div 
+                        key={chat.id}
+                        onClick={() => {
+                          if (forwardChats.includes(chat.id)) {
+                            setForwardChats(prev => prev.filter(id => id !== chat.id));
+                          } else {
+                            setForwardChats(prev => [...prev, chat.id]);
+                          }
+                        }}
+                        className={cn(
+                          "flex items-center gap-3 p-3 cursor-pointer rounded-lg mb-1 transition-colors",
+                          forwardChats.includes(chat.id) ? "bg-[#f0f2f5]" : "hover:bg-gray-50"
+                        )}
+                      >
+                        <div className="w-10 h-10 rounded-full overflow-hidden shrink-0">
+                          <img src={chat.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${chat.id}`} alt="" className="w-full h-full object-cover" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold truncate text-sm">{chat.name}</p>
+                        </div>
+                        <div className={cn(
+                          "w-5 h-5 border-2 rounded flex items-center justify-center transition-colors",
+                          forwardChats.includes(chat.id) ? "bg-[#00a884] border-[#00a884]" : "border-gray-300"
+                        )}>
+                          {forwardChats.includes(chat.id) && <Check size={14} className="text-white" />}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <footer className="p-4 border-t border-gray-100 flex justify-end gap-3 bg-[#f0f2f5]">
+                    <button 
+                      onClick={handleForwardMessages}
+                      disabled={forwardChats.length === 0}
+                      className={cn(
+                        "bg-[#00a884] text-white px-6 py-2 rounded-lg font-bold shadow-md transition-all",
+                        forwardChats.length === 0 ? "opacity-50 cursor-not-allowed" : "hover:shadow-lg active:scale-95"
+                      )}
+                    >
+                      העבר ({forwardChats.length})
+                    </button>
+                  </footer>
                 </div>
               </div>
             )}
