@@ -72,6 +72,16 @@ export default function App() {
         await updateDoc(doc(db, "chats", "main-group"), {
           participants: arrayUnion(user.uid)
         });
+        
+        // System notification for Google users
+        await addDoc(collection(db, `chats/main-group/messages`), {
+          chatId: "main-group",
+          senderId: user.uid,
+          senderName: "מערכת",
+          text: `${user.displayName} הצטרף/ה לצוות. ברוכים הבאים! 👋`,
+          type: "system",
+          createdAt: serverTimestamp()
+        });
       } catch (error) {
         // If already participant or other error
         console.warn("Auto-join participation update skipped or failed:", error);
@@ -109,9 +119,9 @@ export default function App() {
 
       // System notification
       try {
-        await addDoc(collection(db, "chats/main-group/messages"), {
+        await addDoc(collection(db, `chats/main-group/messages`), {
           chatId: "main-group",
-          senderId: "system",
+          senderId: authResult.user.uid,
           senderName: "מערכת",
           text: `${name} הצטרף/ה לצוות. ברוכים הבאים! 👋`,
           type: "system",
