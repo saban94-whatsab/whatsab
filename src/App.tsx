@@ -64,7 +64,7 @@ export default function App() {
         method: 'google'
       };
 
-      await seedInitialData();
+      await seedInitialData(user.uid);
       await syncUserToFirestore(user);
       
       // Auto-join main group
@@ -95,7 +95,7 @@ export default function App() {
         photoURL: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`
       };
 
-      await seedInitialData();
+      await seedInitialData(user.uid);
       await syncUserToFirestore(user);
       
       // Auto-join main group
@@ -134,7 +134,7 @@ export default function App() {
     }
   };
 
-  const seedInitialData = async () => {
+  const seedInitialData = async (creatorUid?: string) => {
     try {
       const mainChatId = "main-group";
       const groupDoc = await getDoc(doc(db, "chats", mainChatId));
@@ -142,7 +142,7 @@ export default function App() {
       if (!groupDoc.exists()) {
         await setDoc(doc(db, "chats", mainChatId), {
           name: "קבוצת סידור עבודה",
-          participants: [], 
+          participants: creatorUid ? [creatorUid] : [], 
           lastMessage: "ברוכים הבאים לקבוצת הסידור!",
           lastMessageTime: serverTimestamp(),
           type: "group",
@@ -150,7 +150,6 @@ export default function App() {
         });
       }
     } catch (error) {
-      // Just log, don't crash login
       console.error("Seed error:", error);
     }
   };
